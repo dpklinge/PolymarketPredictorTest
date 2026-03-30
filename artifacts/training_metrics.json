@@ -1,0 +1,18 @@
+{
+  "training_rows": 20,
+  "category_counts": {
+    "sports": 13,
+    "crypto": 2,
+    "politics": 2,
+    "weather": 1,
+    "hide-from-new": 1,
+    "pop-culture": 1
+  },
+  "global": {
+    "accuracy": 1.0,
+    "log_loss": 0.009348659450419941,
+    "base_rate": 0.35
+  },
+  "categories": {},
+  "min_category_samples": 40
+}

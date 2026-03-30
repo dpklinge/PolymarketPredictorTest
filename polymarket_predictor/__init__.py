@@ -1,0 +1,2 @@
+"""PolyMarket predictor package."""
+
