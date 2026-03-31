@@ -7,6 +7,7 @@ import requests
 
 
 GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
+CLOB_BASE_URL = "https://clob.polymarket.com"
 
 
 @dataclass
@@ -82,6 +83,12 @@ class GammaClient:
             self._event_cache[event_id] = self._get_json(f"/events/{event_id}", params={})
         return self._event_cache[event_id]
 
+    def get_market(self, market_id: str, *, enrich_event_tags: bool = True) -> dict[str, Any]:
+        market = self._get_json(f"/markets/{market_id}", params={})
+        if enrich_event_tags:
+            market = self.enrich_market_with_event_tags(market)
+        return market
+
     def enrich_market_with_event_tags(self, market: dict[str, Any]) -> dict[str, Any]:
         if market.get("category") or market.get("tags"):
             return market
@@ -114,6 +121,45 @@ class GammaClient:
     def _get_json(self, path: str, *, params: dict[str, Any]) -> Any:
         response = self.session.get(
             f"{self.base_url}{path}",
+            params=params,
+            timeout=self.timeout_seconds,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+@dataclass
+class ClobClient:
+    timeout_seconds: int = 30
+    base_url: str = CLOB_BASE_URL
+
+    def __post_init__(self) -> None:
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "Accept": "application/json",
+                "User-Agent": "polymarket-predictor/1.0",
+            }
+        )
+
+    def get_prices_history(
+        self,
+        *,
+        market: str,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+        interval: str = "1d",
+        fidelity: int | None = 60,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"market": market, "interval": interval}
+        if start_ts is not None:
+            params["startTs"] = start_ts
+        if end_ts is not None:
+            params["endTs"] = end_ts
+        if fidelity is not None:
+            params["fidelity"] = fidelity
+        response = self.session.get(
+            f"{self.base_url}/prices-history",
             params=params,
             timeout=self.timeout_seconds,
         )

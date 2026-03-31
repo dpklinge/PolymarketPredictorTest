@@ -1,0 +1,29 @@
+{
+  "preferred_categories": [
+    "politics",
+    "crypto",
+    "sports",
+    "business",
+    "tech",
+    "technology",
+    "science",
+    "culture",
+    "pop-culture",
+    "world",
+    "finance",
+    "economics",
+    "weather"
+  ],
+  "generic_tags": [
+    "other",
+    "featured",
+    "breaking",
+    "news",
+    "hide-from-new"
+  ],
+  "aliases": {
+    "technology": "tech",
+    "pop-culture": "culture",
+    "economics": "finance"
+  }
+}

@@ -1,18 +1,49 @@
 {
-  "training_rows": 20,
+  "training_rows": 19,
+  "validation_rows": 5,
   "category_counts": {
-    "sports": 13,
-    "crypto": 2,
-    "politics": 2,
-    "weather": 1,
-    "hide-from-new": 1,
-    "pop-culture": 1
+    "sports": 12,
+    "politics": 4,
+    "middle-east": 2,
+    "finance": 2,
+    "lebanon": 1,
+    "gaza": 1,
+    "geopolitics": 1,
+    "culture": 1
   },
-  "global": {
+  "global_train": {
     "accuracy": 1.0,
-    "log_loss": 0.009348659450419941,
-    "base_rate": 0.35
+    "log_loss": 0.007379936058805786,
+    "brier_score": 7.96146601231484e-05,
+    "ece": 0.007339750699253656,
+    "base_rate": 0.42105263157894735,
+    "rows": 19
+  },
+  "global_validation": {
+    "accuracy": 1.0,
+    "log_loss": 0.008963930730732522,
+    "brier_score": 9.43911766630142e-05,
+    "ece": 0.008916366551721146,
+    "base_rate": 0.0,
+    "rows": 5
+  },
+  "backtest_validation": {
+    "trades": 0,
+    "yes_trades": 0,
+    "no_trades": 0,
+    "roi": 0.0,
+    "avg_pnl": 0.0,
+    "win_rate": 0.0
+  },
+  "split": {
+    "validation_fraction": 0.2,
+    "train_start": "2026-03-30 00:00:00+00:00",
+    "train_end": "2026-03-31 21:00:00+00:00",
+    "validation_start": "2026-03-31 21:00:00+00:00",
+    "validation_end": "2026-04-04 05:00:00+00:00"
   },
   "categories": {},
-  "min_category_samples": 40
+  "min_category_samples": 40,
+  "model_type": "logistic",
+  "edge_threshold": 0.05
 }
