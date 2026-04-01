@@ -40,7 +40,7 @@ pip install -r requirements.txt
 ## Launch GUI
 
 ```bash
-python -m polymarket_predictor.ui.gui
+python -m launch_gui
 ```
 
 The GUI lets you:
