@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 
 from ..ml.metrics import binary_accuracy, binary_log_loss, brier_score
-from ..ml.models import load_model
 from ..ml.pipeline import _blend_weight, _deserialize_feature_column, _split_chronologically, _stack_features, load_bundle
 
 
@@ -121,7 +120,7 @@ def close_distance_efficacy_frame(artifact_dirs: list[str | Path], dataset_path:
             continue
 
         bundle = load_bundle(artifact_dir)
-        models = {name: load_model(payload) for name, payload in bundle["models"].items()}
+        models = bundle["models"]
         global_model = models["global"]
         category_train_rows = {key: int(value) for key, value in bundle.get("category_train_rows", {}).items()}
         min_category_samples = int(bundle.get("min_category_samples", 40))
@@ -205,6 +204,19 @@ def snapshot_review_summary_frame(review_frame: pd.DataFrame) -> pd.DataFrame:
         resolved_pnl = float(resolved["realized_pnl"].fillna(0.0).sum())
         pending_max_profit = float(pending["max_profit_at_snapshot"].fillna(0.0).sum())
         pending_max_loss = float(pending["max_loss_at_snapshot"].fillna(0.0).sum())
+
+        budget_per_pick = 1000.0 / total_count if total_count > 0 else 0.0
+        resolved_with_cost = resolved[resolved["stake_cost_at_snapshot"].fillna(0.0) > 0]
+        if len(resolved_with_cost) > 0:
+            dollar_pnl_per_pick = (
+                resolved_with_cost["realized_pnl"].fillna(0.0)
+                / resolved_with_cost["stake_cost_at_snapshot"]
+                * budget_per_pick
+            )
+            expected_return_1000 = float(dollar_pnl_per_pick.sum())
+        else:
+            expected_return_1000 = None
+
         records.append(
             {
                 "model_label": model_label,
@@ -222,6 +234,7 @@ def snapshot_review_summary_frame(review_frame: pd.DataFrame) -> pd.DataFrame:
                 "resolved_roi": (resolved_pnl / resolved_cost) if resolved_cost else None,
                 "pending_max_profit": pending_max_profit,
                 "pending_max_loss": pending_max_loss,
+                "expected_return_1000": expected_return_1000,
             }
         )
 

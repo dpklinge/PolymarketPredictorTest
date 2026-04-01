@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import joblib
 import numpy as np
 import pandas as pd
 
@@ -13,7 +14,7 @@ from ..datasets.data import build_market_history_index, prepare_dataset, tempora
 from ..datasets.features import FeatureRow, build_feature_row
 from ..datasets.taxonomy import load_taxonomy
 from .metrics import simulate_backtest, summarize_classification
-from .models import create_model, load_model
+from .models import create_model
 
 
 MIN_CATEGORY_SAMPLES = 40
@@ -160,13 +161,11 @@ def train_models(
     global_model = create_model(model_type).fit(
         train_features,
         train_labels,
-        calibration_features=validation_features,
-        calibration_labels=validation_labels,
     )
     train_global_probabilities = global_model.predict_proba(train_features)
     validation_global_probabilities = global_model.predict_proba(validation_features)
 
-    models: dict[str, Any] = {"global": global_model.to_dict()}
+    models: dict[str, Any] = {"global": global_model}
     category_train_rows: dict[str, int] = {}
     category_metrics: dict[str, Any] = {}
 
@@ -183,10 +182,8 @@ def train_models(
         model = create_model(model_type).fit(
             category_features,
             category_labels,
-            calibration_features=category_validation_features,
-            calibration_labels=category_validation_labels,
         )
-        models[category] = model.to_dict()
+        models[category] = model
         category_train_rows[category] = int(len(category_train))
         if category_validation.empty:
             continue
@@ -210,7 +207,7 @@ def train_models(
             continue
         category_indexes = category_validation.index.to_numpy()
         category_features = _stack_features(category_validation)
-        category_probabilities = load_model(models[category]).predict_proba(category_features)
+        category_probabilities = models[category].predict_proba(category_features)
         blend_weight = _blend_weight(train_rows, min_category_samples)
         blended_validation_probabilities[category_indexes] = (
             blend_weight * category_probabilities
@@ -246,19 +243,19 @@ def train_models(
         "min_category_samples": min_category_samples,
     }
 
-    bundle_path = artifact_path / "model_bundle.json"
+    bundle_path = artifact_path / "model_bundle.joblib"
     metrics_path = artifact_path / "training_metrics.json"
-    bundle_path.write_text(json.dumps(bundle, indent=2), encoding="utf-8")
+    joblib.dump(bundle, bundle_path)
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
     return TrainingResult(bundle_path=bundle_path, metrics_path=metrics_path, metrics=metrics)
 
 
 def load_bundle(artifact_dir: str | Path) -> dict[str, Any]:
-    path = Path(artifact_dir) / "model_bundle.json"
+    path = Path(artifact_dir) / "model_bundle.joblib"
     if not path.exists():
         raise FileNotFoundError(f"Missing model bundle: {path}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return joblib.load(path)
 
 
 def predict_open_markets(
@@ -271,7 +268,7 @@ def predict_open_markets(
     history_snapshot_paths: list[str | Path] | None = None,
 ) -> pd.DataFrame:
     bundle = load_bundle(artifact_dir)
-    models = {name: load_model(payload) for name, payload in bundle["models"].items()}
+    models = bundle["models"]
     global_model = models["global"]
     category_train_rows = {key: int(value) for key, value in bundle.get("category_train_rows", {}).items()}
     min_category_samples = int(bundle.get("min_category_samples", MIN_CATEGORY_SAMPLES))

@@ -109,16 +109,19 @@ def _build_temporal_features(
     price_delta = current_price - previous_price
     volume_delta = current_volume - previous_volume
     liquidity_delta = current_liquidity - previous_liquidity
-    velocity_divisor = max(delta_hours, 1e-6)
+    price_velocity = price_delta / delta_hours if delta_hours > 0.0 else 0.0
+
+    def _signed_log1p(x: float) -> float:
+        return math.copysign(math.log1p(abs(x)), x)
 
     return np.array(
         [
             previous_price,
             price_delta,
             abs(price_delta),
-            price_delta / velocity_divisor,
-            math.log1p(max(volume_delta, 0.0)),
-            math.log1p(max(liquidity_delta, 0.0)),
+            price_velocity,
+            _signed_log1p(volume_delta),
+            _signed_log1p(liquidity_delta),
             math.log1p(delta_hours),
             float(previous_market is not None),
         ],

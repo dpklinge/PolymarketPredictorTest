@@ -15,8 +15,9 @@ from polymarket_predictor.datasets.data import (
 )
 from polymarket_predictor.datasets.features import TEMPORAL_DIMENSIONS, TEXT_DIMENSIONS, build_feature_row
 from polymarket_predictor.ml.metrics import simulate_backtest
+from polymarket_predictor.ui.gui_utils import snapshot_review_summary_frame
 from polymarket_predictor.ml.model import GradientBoostedStumpModel, LogisticModel
-from polymarket_predictor.ml.models import create_model, load_model
+from polymarket_predictor.ml.models import create_model
 from polymarket_predictor.ml.pipeline import _blend_weight, _split_chronologically
 from polymarket_predictor.review.snapshotting import (
     build_snapshot_output_path,
@@ -186,29 +187,36 @@ def test_boosted_stump_model_learns_nonlinear_signal() -> None:
     assert probabilities[3] > 0.5
 
 
-def test_boosted_tree_adapter_round_trips() -> None:
+def test_boosted_tree_adapter_round_trips(tmp_path: Path) -> None:
+    import joblib
+
     x = np.array([[0.1], [0.2], [0.8], [0.9]], dtype=float)
     y = np.array([0, 0, 1, 1], dtype=int)
 
     adapter = create_model("boosted_trees").fit(x, y)
-    payload = adapter.to_dict()
-    restored = load_model(payload)
+    bundle_path = tmp_path / "adapter.joblib"
+    joblib.dump(adapter, bundle_path)
+    restored = joblib.load(bundle_path)
     probabilities = restored.predict_proba(x)
 
-    assert payload["model_type"] == "boosted_trees"
+    assert adapter.model_type == "boosted_trees"
     assert probabilities[-1] > probabilities[0]
 
 
-def test_logistic_adapter_calibration_round_trips() -> None:
+def test_logistic_adapter_calibration_round_trips(tmp_path: Path) -> None:
+    import joblib
+
     x = np.array([[0.1], [0.2], [0.8], [0.9], [0.85], [0.15], [0.7], [0.25]], dtype=float)
     y = np.array([0, 0, 1, 1, 1, 0, 1, 0], dtype=int)
 
     adapter = create_model("logistic").fit(x[:6], y[:6], calibration_features=x[6:], calibration_labels=y[6:])
-    payload = adapter.to_dict()
-    restored = load_model(payload)
+    bundle_path = tmp_path / "adapter.joblib"
+    joblib.dump(adapter, bundle_path)
+    restored = joblib.load(bundle_path)
     probabilities = restored.predict_proba(x)
 
-    assert "calibrator" in payload
+    assert adapter.model_type == "logistic"
+    assert adapter.calibrator is not None
     assert np.all(probabilities > 0.0)
     assert np.all(probabilities < 1.0)
 
@@ -423,3 +431,25 @@ def test_compare_prediction_snapshots_marks_success_and_pending(tmp_path: Path, 
     verdicts = dict(zip(frame["market_id"], frame["verdict"]))
     assert verdicts["1"] == "Success"
     assert verdicts["2"] == "Pending"
+
+
+def test_snapshot_summary_expected_return_1000() -> None:
+    # 2 picks: one resolved win, one pending
+    # stake_cost 0.4 → YES bet at 40 cents per share; win pnl = 1.0 - 0.4 = 0.6
+    # budget per pick = 1000 / 2 = 500
+    # resolved pick dollar pnl = (500 / 0.4) * 0.6 = 750
+    review_frame = pd.DataFrame(
+        {
+            "model_label": ["logistic", "logistic"],
+            "verdict": ["Success", "Pending"],
+            "stake_cost_at_snapshot": [0.4, 0.6],
+            "max_profit_at_snapshot": [0.6, 0.4],
+            "max_loss_at_snapshot": [0.4, 0.6],
+            "realized_payout": [1.0, None],
+            "realized_pnl": [0.6, None],
+        }
+    )
+    summary = snapshot_review_summary_frame(review_frame)
+    assert len(summary) == 1
+    assert "expected_return_1000" in summary.columns
+    assert abs(summary.iloc[0]["expected_return_1000"] - 750.0) < 1e-6

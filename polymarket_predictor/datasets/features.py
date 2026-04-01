@@ -241,7 +241,7 @@ def build_feature_row(
     best_ask = parse_float(market.get("bestAsk"))
     spread = parse_float(market.get("spread"))
     last_trade_price = parse_float(market.get("lastTradePrice"), default=yes_probability)
-    mid_price = (best_bid + best_ask) / 2.0 if best_bid > 0 or best_ask > 0 else yes_probability
+    mid_price = (best_bid + best_ask) / 2.0 if best_bid > 0 and best_ask > 0 else yes_probability
     event_volume, event_liquidity, event_open_interest, event_comments, event_competitiveness, event_avg_tag_count = (
         _event_aggregates(market)
     )

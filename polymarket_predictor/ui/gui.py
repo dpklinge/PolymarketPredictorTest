@@ -66,6 +66,7 @@ SNAPSHOT_SUMMARY_COLUMN_TOOLTIPS = {
     "resolved_roi": "Realized profit or loss divided by resolved cost.",
     "pending_max_profit": "Best-case remaining profit if every pending row resolves in the model's favor.",
     "pending_max_loss": "Worst-case remaining loss if every pending row resolves against the model.",
+    "expected_return_1000": "Dollar P&L from investing $1000 equally across all picks at snapshot time. Each pick receives $1000 divided by the total number of picks, and shares are bought at the snapshot odds. Only resolved picks contribute; pending picks are not yet counted.",
 }
 
 
@@ -205,6 +206,7 @@ class PredictorGUI:
 
         result_notebook = ttk.Notebook(results)
         result_notebook.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        self.result_notebook = result_notebook
 
         self.log_text = tk.Text(result_notebook, wrap="word", font=("Consolas", 10))
         result_notebook.add(self.log_text, text="Log")
@@ -342,9 +344,27 @@ class PredictorGUI:
             if item in selected_set:
                 listbox.selection_set(index)
 
+    def _add_tab_help(self, parent: ttk.Frame, text: str) -> None:
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=(12, 0))
+        help_box = tk.Text(
+            parent,
+            wrap="word",
+            height=8,
+            font=("Segoe UI", 9),
+            background="#f0f0f0",
+            foreground="#444444",
+            relief="flat",
+            borderwidth=0,
+            padx=8,
+            pady=6,
+        )
+        help_box.insert("1.0", text)
+        help_box.configure(state="disabled")
+        help_box.pack(fill=tk.X, padx=4, pady=(4, 8))
+
     def _refresh_available_artifact_dirs(self) -> None:
         discovered: list[str] = []
-        for bundle_path in Path.cwd().glob("artifacts/**/model_bundle.json"):
+        for bundle_path in Path.cwd().glob("artifacts/**/model_bundle.joblib"):
             parent = bundle_path.parent.resolve()
             if parent == (Path.cwd() / "artifacts").resolve():
                 continue
@@ -476,6 +496,14 @@ class PredictorGUI:
         run = ttk.Button(frame, text="Run Fetch", command=self.run_fetch)
         run.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(10, 0))
         ToolTip(run, "Fetch raw Polymarket data using the selected options and save it to the chosen JSONL file.")
+        self._add_tab_help(
+            self.fetch_tab,
+            "Step 1 \u2014 Collect raw market data from the Polymarket API.\n\n"
+            "To build training data, fetch closed markets and save them to a JSONL file. "
+            "To capture price history for live predictions, fetch open markets on a regular schedule with Append set to Yes. "
+            "More pages and a larger page size give a wider market sample but take longer. "
+            "Use volume24hr ordering to focus on the most actively traded markets.",
+        )
 
     def _build_prepare_tab(self) -> None:
         frame = ttk.LabelFrame(self.prepare_tab, text="Prepare Dataset", style="Section.TLabelframe")
@@ -506,6 +534,14 @@ class PredictorGUI:
         run = ttk.Button(frame, text="Run Prepare", command=self.run_prepare)
         run.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 0))
         ToolTip(run, "Convert raw snapshots into model-ready rows with engineered features.")
+        self._add_tab_help(
+            self.prepare_tab,
+            "Step 2 \u2014 Convert raw snapshots into a model-ready dataset.\n\n"
+            "Run this after accumulating closed-market snapshots from the Fetch tab. "
+            "Multiple input files can be combined using semicolons to build a larger dataset. "
+            "The output CSV flattens each market into a row of numeric features covering price, volume, text, and time-to-close signals. "
+            "Re-run Prepare whenever you have new snapshot data to incorporate before the next training run.",
+        )
 
     def _build_train_tab(self) -> None:
         frame = ttk.LabelFrame(self.train_tab, text="Train Models", style="Section.TLabelframe")
@@ -598,6 +634,14 @@ class PredictorGUI:
         run_graph = ttk.Button(compare_frame, text="Load Close-Distance Graph", command=self.load_close_distance_graph)
         run_graph.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(10, 0))
         ToolTip(run_graph, "Plot model validation performance versus how many hours before close each training row was anchored.")
+        self._add_tab_help(
+            self.train_tab,
+            "Step 3 \u2014 Fit models and evaluate quality.\n\n"
+            "Train after Prepare. Logistic regression and boosted trees are both strong choices; train both and compare them using Load Metrics Comparison. "
+            "Lower log loss and Brier score on the validation set is better. "
+            "The Close-Distance Graph shows how accuracy changes as markets approach their close date \u2014 "
+            "a well-calibrated model should improve as the close approaches and uncertainty resolves.",
+        )
 
     def _build_predict_tab(self) -> None:
         frame = ttk.LabelFrame(self.predict_tab, text="Compare Predictions", style="Section.TLabelframe")
@@ -678,6 +722,14 @@ class PredictorGUI:
         save_snapshot = ttk.Button(frame, text="Save Current Predictions Snapshot", command=self.save_current_prediction_snapshot)
         save_snapshot.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(10, 0))
         ToolTip(save_snapshot, "Save the most recently generated prediction frames so they can be reviewed later against the eventual market outcome.")
+        self._add_tab_help(
+            self.predict_tab,
+            "Step 4 \u2014 Score live markets and identify edges.\n\n"
+            "Select one or more trained model folders to compare their predictions side by side on the same live markets. "
+            "Markets where the model disagrees most strongly with the current market price appear at the top. "
+            "Point the History JSONL field at an open-market snapshot file to unlock temporal price-change features. "
+            "Save a snapshot before acting on any predictions so you can measure real-world accuracy once markets resolve.",
+        )
 
     def _build_snapshot_tab(self) -> None:
         frame = ttk.LabelFrame(self.snapshot_tab, text="Review Saved Prediction Snapshots", style="Section.TLabelframe")
@@ -712,6 +764,14 @@ class PredictorGUI:
         run = ttk.Button(frame, text="Compare Snapshot To Current Market", command=self.run_snapshot_review)
         run.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(10, 0))
         ToolTip(run, "Load the snapshot file, fetch the current market state from Polymarket, and label each prediction as Success, Failure, or Pending.")
+        self._add_tab_help(
+            self.snapshot_tab,
+            "Step 5 \u2014 Evaluate past predictions against actual outcomes.\n\n"
+            "Load a snapshot CSV saved from the Predict tab to see which calls were correct, still pending, or wrong. "
+            "Use the Status Filter to focus on resolved markets only. "
+            "Results appear in the Snapshot Review tab (one row per prediction) and the Snapshot Summary tab "
+            "(aggregated win rate, ROI, and expected dollar return on a $1,000 equal-weight portfolio across all picks).",
+        )
 
     def _poll_queue(self) -> None:
         while self.output_queue:
@@ -723,6 +783,8 @@ class PredictorGUI:
                 self.log_text.insert(tk.END, "[error] " + message + "\n")
                 self.log_text.see(tk.END)
                 messagebox.showerror("Polymarket Predictor GUI", message)
+            elif kind == "select_tab":
+                self.result_notebook.select(message)
         self.root.after(150, self._poll_queue)
 
     def _run_background(self, description: str, callback) -> None:
@@ -768,6 +830,7 @@ class PredictorGUI:
                 append=self._combo_is_yes(self.fetch_append_var.get()),
             )
             self.output_queue.append(("log", f"Saved snapshot file to {path}"))
+            self.output_queue.append(("select_tab", 0))
 
         self._run_background("Fetch", callback)
 
@@ -776,6 +839,7 @@ class PredictorGUI:
             inputs = [item.strip() for item in self.prepare_input_var.get().split(";") if item.strip()]
             path = prepare_dataset(snapshot_paths=inputs, output_path=self.prepare_output_var.get())
             self.output_queue.append(("log", f"Prepared dataset saved to {path}"))
+            self.output_queue.append(("select_tab", 0))
 
         self._run_background("Prepare dataset", callback)
 
@@ -814,6 +878,7 @@ class PredictorGUI:
             frame = training_comparison_frame(dirs)
             self._populate_tree(self.metrics_tree, frame)
             self.output_queue.append(("log", f"Loaded training comparison for {len(frame)} runs."))
+            self.output_queue.append(("select_tab", 1))
 
         if from_background:
             callback()
@@ -830,7 +895,8 @@ class PredictorGUI:
                 raise ValueError("Choose a dataset CSV in the Train tab before loading the close-distance graph.")
             frame = close_distance_efficacy_frame(dirs, dataset_path)
             self._draw_efficacy_chart(frame, metric=self.efficacy_metric_var.get())
-            self.output_queue.append(("log", f"Loaded close-distance graph for {len(dirs)} runs.")) 
+            self.output_queue.append(("log", f"Loaded close-distance graph for {len(dirs)} runs."))
+            self.output_queue.append(("select_tab", 5))
 
         self._run_background("Load close-distance graph", callback)
 
@@ -858,6 +924,7 @@ class PredictorGUI:
             comparison = prediction_comparison_frame(frames)
             self._populate_tree(self.predictions_tree, comparison)
             self.output_queue.append(("log", f"Loaded prediction comparison for {len(frames)} runs."))
+            self.output_queue.append(("select_tab", 2))
 
         self._run_background("Prediction comparison", callback)
 
@@ -875,6 +942,7 @@ class PredictorGUI:
             )
             self.review_snapshot_input_var.set(str(result.output_path))
             self.output_queue.append(("log", f"Saved {result.records_written} prediction snapshot rows to {result.output_path}"))
+            self.output_queue.append(("select_tab", 0))
 
         self._run_background("Save prediction snapshot", callback)
 
@@ -889,6 +957,7 @@ class PredictorGUI:
             self._populate_tree(self.snapshot_review_tree, frame)
             self._populate_tree(self.snapshot_summary_tree, snapshot_review_summary_frame(frame))
             self.output_queue.append(("log", f"Loaded snapshot review with {len(frame)} rows."))
+            self.output_queue.append(("select_tab", 3))
 
         self._run_background("Snapshot review", callback)
 

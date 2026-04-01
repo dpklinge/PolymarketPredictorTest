@@ -38,12 +38,14 @@ def expected_calibration_error(labels: np.ndarray, probabilities: np.ndarray, bi
 
 
 def summarize_classification(labels: np.ndarray, probabilities: np.ndarray) -> dict[str, float]:
+    if len(labels) == 0:
+        return {"accuracy": math.nan, "log_loss": math.nan, "brier_score": math.nan, "ece": math.nan, "base_rate": math.nan, "rows": 0}
     return {
         "accuracy": binary_accuracy(labels, probabilities),
         "log_loss": binary_log_loss(labels, probabilities),
         "brier_score": brier_score(labels, probabilities),
         "ece": expected_calibration_error(labels, probabilities),
-        "base_rate": float(labels.mean()) if len(labels) else math.nan,
+        "base_rate": float(labels.mean()),
         "rows": int(len(labels)),
     }
 
