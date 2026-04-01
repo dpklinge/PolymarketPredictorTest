@@ -99,13 +99,25 @@ def compare_prediction_snapshots(
         resolution_label = infer_resolution_label(current_market)
         predicted_yes_probability = float(getattr(row, "predicted_yes_probability"))
         predicted_side = "YES" if predicted_yes_probability >= 0.5 else "NO"
+        market_yes_probability_at_snapshot = float(getattr(row, "market_yes_probability_at_snapshot"))
+        stake_cost_at_snapshot = (
+            market_yes_probability_at_snapshot
+            if predicted_side == "YES"
+            else (1.0 - market_yes_probability_at_snapshot)
+        )
+        max_profit_at_snapshot = 1.0 - stake_cost_at_snapshot
+        max_loss_at_snapshot = stake_cost_at_snapshot
 
         if resolution_label is None:
             verdict = "Pending"
             actual_side = ""
+            realized_payout = None
+            realized_pnl = None
         else:
             actual_side = "YES" if resolution_label == 1 else "NO"
             verdict = "Success" if predicted_side == actual_side else "Failure"
+            realized_payout = 1.0 if predicted_side == actual_side else 0.0
+            realized_pnl = realized_payout - stake_cost_at_snapshot
 
         comparison_records.append(
             {
@@ -118,13 +130,18 @@ def compare_prediction_snapshots(
                 "category": getattr(row, "category"),
                 "predicted_side": predicted_side,
                 "predicted_yes_probability": predicted_yes_probability,
-                "market_yes_probability_at_snapshot": float(getattr(row, "market_yes_probability_at_snapshot")),
+                "market_yes_probability_at_snapshot": market_yes_probability_at_snapshot,
+                "stake_cost_at_snapshot": stake_cost_at_snapshot,
+                "max_profit_at_snapshot": max_profit_at_snapshot,
+                "max_loss_at_snapshot": max_loss_at_snapshot,
                 "current_market_yes_probability": float(current_yes_probability) if current_yes_probability is not None else None,
                 "current_closed": bool(current_market.get("closed")),
                 "actual_side": actual_side,
                 "verdict": verdict,
+                "realized_payout": realized_payout,
+                "realized_pnl": realized_pnl,
                 "current_edge_vs_snapshot_market": (
-                    float(current_yes_probability) - float(getattr(row, "market_yes_probability_at_snapshot"))
+                    float(current_yes_probability) - market_yes_probability_at_snapshot
                     if current_yes_probability is not None
                     else None
                 ),
@@ -153,8 +170,13 @@ def compare_prediction_snapshots(
         "actual_side",
         "predicted_yes_probability",
         "market_yes_probability_at_snapshot",
+        "stake_cost_at_snapshot",
+        "max_profit_at_snapshot",
+        "max_loss_at_snapshot",
         "current_market_yes_probability",
         "current_closed",
+        "realized_payout",
+        "realized_pnl",
         "current_edge_vs_snapshot_market",
     ]
     comparison = comparison[[column for column in ordered_columns if column in comparison.columns]]

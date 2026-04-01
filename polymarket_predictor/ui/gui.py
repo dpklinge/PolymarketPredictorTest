@@ -11,7 +11,7 @@ import pandas as pd
 from ..datasets.data import fetch_snapshots, prepare_dataset
 from ..ml.pipeline import predict_open_markets, train_models
 from ..review.snapshotting import compare_prediction_snapshots, save_prediction_snapshots
-from .gui_utils import prediction_comparison_frame, training_comparison_frame
+from .gui_utils import close_distance_efficacy_frame, prediction_comparison_frame, snapshot_review_summary_frame, training_comparison_frame
 
 
 FETCH_ORDER_OPTIONS = ["volume24hr", "updatedAt", "volume", "liquidity"]
@@ -19,6 +19,7 @@ BOOLEAN_OPTIONS = ["Yes", "No"]
 SORT_DIRECTION_OPTIONS = ["Descending", "Ascending"]
 MODEL_TYPE_OPTIONS = ["logistic", "boosted_trees", "prior"]
 SNAPSHOT_STATUS_OPTIONS = ["All", "Pending", "Success", "Failure"]
+EFFICACY_METRIC_OPTIONS = ["accuracy", "log_loss", "brier_score"]
 PREDICTION_COLUMN_TOOLTIPS = {
     "market_id": "Internal Polymarket identifier for the market. Useful for matching the same market across model runs.",
     "slug": "Short text identifier used in Polymarket URLs and API responses.",
@@ -38,11 +39,33 @@ SNAPSHOT_REVIEW_COLUMN_TOOLTIPS = {
     "predicted_side": "YES if the model's saved probability was 50% or higher, otherwise NO.",
     "predicted_yes_probability": "Saved YES probability from the model at the time the snapshot was taken.",
     "market_yes_probability_at_snapshot": "Polymarket's YES probability when the snapshot was saved.",
+    "stake_cost_at_snapshot": "Cost to buy one share on the model's predicted side at the snapshot odds.",
+    "max_profit_at_snapshot": "Best-case profit for one share bought on the predicted side at the snapshot odds.",
+    "max_loss_at_snapshot": "Worst-case loss for one share bought on the predicted side at the snapshot odds.",
     "current_market_yes_probability": "Polymarket's current YES probability right now.",
     "current_closed": "Whether Polymarket currently marks this market as closed.",
     "actual_side": "Resolved winning side if the market is finished. Blank means the result is not final yet.",
     "verdict": "Success means the saved prediction picked the correct side, Failure means it picked the wrong side, and Pending means the market is not resolved yet.",
+    "realized_payout": "Settlement payout for one share on the predicted side after resolution. Blank while the market is still pending.",
+    "realized_pnl": "Realized profit or loss for one share bought on the predicted side at snapshot time. Blank while the market is still pending.",
     "current_edge_vs_snapshot_market": "How much the market's YES probability moved since the snapshot was taken.",
+}
+SNAPSHOT_SUMMARY_COLUMN_TOOLTIPS = {
+    "model_label": "Short label for the model whose snapshot calls are being summarized.",
+    "rows": "Total snapshot rows saved for this model in the selected file.",
+    "resolved_rows": "How many rows now have a final outcome.",
+    "pending_rows": "How many rows are still unresolved.",
+    "wins": "Resolved rows where the predicted side matched the final outcome.",
+    "losses": "Resolved rows where the prediction was wrong.",
+    "win_rate": "Win percentage across resolved rows only.",
+    "total_cost_at_snapshot": "Total amount spent if you bought one share on each predicted side at the snapshot odds.",
+    "resolved_cost_at_snapshot": "Portion of that spend belonging to rows that are already resolved.",
+    "resolved_payout": "Total settlement payout received so far from resolved rows.",
+    "resolved_pnl": "Realized profit or loss so far from resolved rows.",
+    "avg_resolved_pnl": "Average realized profit or loss per resolved row.",
+    "resolved_roi": "Realized profit or loss divided by resolved cost.",
+    "pending_max_profit": "Best-case remaining profit if every pending row resolves in the model's favor.",
+    "pending_max_loss": "Worst-case remaining loss if every pending row resolves against the model.",
 }
 
 
@@ -131,9 +154,11 @@ class PredictorGUI:
         self.output_queue: list[tuple[str, str]] = []
         self.last_prediction_frames: dict[str, pd.DataFrame] = {}
         self.tree_sort_state: dict[tuple[str, str], bool] = {}
+        self.available_artifact_dirs: list[str] = []
 
         self._build_styles()
         self._build_layout()
+        self._refresh_available_artifact_dirs()
         self._poll_queue()
 
     def _build_styles(self) -> None:
@@ -203,6 +228,16 @@ class PredictorGUI:
             "Snapshot Review",
             "Evaluation of saved prediction snapshots versus the latest Polymarket market state.",
         )
+        self.snapshot_summary_tree = self._create_tree_tab(
+            result_notebook,
+            "Snapshot Summary",
+            "Per-model profit and loss summary based on buying one share on each predicted side at the snapshot odds.",
+        )
+        self.efficacy_canvas = self._create_canvas_tab(
+            result_notebook,
+            "Close-Distance Graph",
+            "Graph of model validation efficacy as a function of how far the prediction was from market close.",
+        )
 
     def _create_tree_tab(self, notebook: ttk.Notebook, title: str, tooltip_text: str) -> ttk.Treeview:
         frame = ttk.Frame(notebook)
@@ -218,6 +253,16 @@ class PredictorGUI:
         tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
         ToolTip(tree, tooltip_text)
         return tree
+
+    def _create_canvas_tab(self, notebook: ttk.Notebook, title: str, tooltip_text: str) -> tk.Canvas:
+        frame = ttk.Frame(notebook)
+        notebook.add(frame, text=title)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+        canvas = tk.Canvas(frame, background="white", highlightthickness=0)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        ToolTip(canvas, tooltip_text)
+        return canvas
 
     def _add_labeled_entry(
         self,
@@ -288,6 +333,45 @@ class PredictorGUI:
         ToolTip(label_widget, help_text)
         ToolTip(listbox, help_text)
         return listbox
+
+    def _set_listbox_values(self, listbox: tk.Listbox, values: list[str], *, selected: list[str] | None = None) -> None:
+        selected_set = set(selected or [])
+        listbox.delete(0, tk.END)
+        for index, item in enumerate(values):
+            listbox.insert(tk.END, item)
+            if item in selected_set:
+                listbox.selection_set(index)
+
+    def _refresh_available_artifact_dirs(self) -> None:
+        discovered: list[str] = []
+        for bundle_path in Path.cwd().glob("artifacts/**/model_bundle.json"):
+            parent = bundle_path.parent.resolve()
+            if parent == (Path.cwd() / "artifacts").resolve():
+                continue
+            discovered.append(str(parent))
+        self.available_artifact_dirs = sorted(set(discovered))
+        if hasattr(self, "metrics_artifact_list"):
+            previous_metrics = self._selected_metrics_artifact_dirs()
+            selected_metrics = [item for item in previous_metrics if item in self.available_artifact_dirs]
+            if not selected_metrics:
+                selected_metrics = self.available_artifact_dirs[: min(2, len(self.available_artifact_dirs))]
+            self._set_listbox_values(self.metrics_artifact_list, self.available_artifact_dirs, selected=selected_metrics)
+        if hasattr(self, "predict_artifact_list"):
+            previously_selected = self._selected_prediction_artifact_dirs()
+            selected = [item for item in previously_selected if item in self.available_artifact_dirs]
+            if not selected:
+                selected = self.available_artifact_dirs[: min(2, len(self.available_artifact_dirs))]
+            self._set_listbox_values(self.predict_artifact_list, self.available_artifact_dirs, selected=selected)
+
+    def _selected_prediction_artifact_dirs(self) -> list[str]:
+        if not hasattr(self, "predict_artifact_list"):
+            return []
+        return [self.predict_artifact_list.get(index) for index in self.predict_artifact_list.curselection()]
+
+    def _selected_metrics_artifact_dirs(self) -> list[str]:
+        if not hasattr(self, "metrics_artifact_list"):
+            return []
+        return [self.metrics_artifact_list.get(index) for index in self.metrics_artifact_list.curselection()]
 
     def _browse_file(self, variable: tk.StringVar, *, save: bool = False, multiple: bool = False) -> None:
         initial_dir = self._initial_dir_for_value(variable.get(), fallback=Path.cwd() / "artifacts")
@@ -488,28 +572,49 @@ class PredictorGUI:
 
         compare_frame = ttk.LabelFrame(self.train_tab, text="Compare Existing Runs", style="Section.TLabelframe")
         compare_frame.pack(fill=tk.X, expand=False, padx=4, pady=4)
-        self.metrics_dirs_var = self._add_labeled_entry(
+        self.metrics_artifact_list = self._add_labeled_listbox(
             compare_frame,
-            "Artifact Dirs (; separated)",
+            "Existing Runs",
             0,
-            default="artifacts/logistic_run;artifacts/boosted_run",
-            help_text="One or more run folders containing `training_metrics.json`. The comparison table reads these files and sorts models by validation quality.",
+            values=[],
+            selected=[],
+            help_text="Select one or more existing trained model runs. Only artifact folders that actually contain saved model bundles are listed here.",
+            height=5,
+        )
+        refresh_runs = ttk.Button(compare_frame, text="Refresh Runs", command=self.refresh_available_runs)
+        refresh_runs.grid(row=0, column=2, padx=(8, 0), sticky="n")
+        ToolTip(refresh_runs, "Rescan the artifacts folder for existing trained model runs.")
+        self.efficacy_metric_var = self._add_labeled_combobox(
+            compare_frame,
+            "Graph Metric",
+            1,
+            values=EFFICACY_METRIC_OPTIONS,
+            default="accuracy",
+            help_text="Which validation metric to plot against time-to-close. Accuracy is easier to read, while log loss and Brier score emphasize probability quality.",
         )
         run_compare = ttk.Button(compare_frame, text="Load Metrics Comparison", command=self.load_metrics_comparison)
-        run_compare.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        run_compare.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 0))
         ToolTip(run_compare, "Load and compare metric summaries from the listed model artifact folders.")
+        run_graph = ttk.Button(compare_frame, text="Load Close-Distance Graph", command=self.load_close_distance_graph)
+        run_graph.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        ToolTip(run_graph, "Plot model validation performance versus how many hours before close each training row was anchored.")
 
     def _build_predict_tab(self) -> None:
         frame = ttk.LabelFrame(self.predict_tab, text="Compare Predictions", style="Section.TLabelframe")
         frame.pack(fill=tk.X, expand=False, padx=4, pady=4)
 
-        self.predict_artifact_dirs_var = self._add_labeled_entry(
+        self.predict_artifact_list = self._add_labeled_listbox(
             frame,
-            "Artifact Dirs (; separated)",
+            "Trained Models",
             0,
-            default="artifacts/logistic_run;artifacts/boosted_run",
-            help_text="Model artifact folders to score side by side on the same live markets.",
+            values=[],
+            selected=[],
+            help_text="Select one or more trained model artifact folders discovered under the artifacts directory. These runs will be scored side by side on the same live markets.",
+            height=5,
         )
+        refresh_models = ttk.Button(frame, text="Refresh Models", command=self.refresh_prediction_artifacts)
+        refresh_models.grid(row=0, column=2, padx=(8, 0), sticky="n")
+        ToolTip(refresh_models, "Rescan the artifacts folder for trained model runs and refresh the selectable list.")
         self.predict_history_var = self._add_labeled_entry(
             frame,
             "History JSONL Files (; separated)",
@@ -601,8 +706,8 @@ class PredictorGUI:
             frame,
             "Limit",
             2,
-            default="100",
-            help_text="Maximum number of reviewed snapshot rows to show in the table.",
+            default="",
+            help_text="Maximum number of reviewed snapshot rows to show in the table. Leave blank to show all rows.",
         )
         run = ttk.Button(frame, text="Compare Snapshot To Current Market", command=self.run_snapshot_review)
         run.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(10, 0))
@@ -642,6 +747,14 @@ class PredictorGUI:
 
     def _selected_model_types(self) -> list[str]:
         return [self.train_model_types_list.get(index) for index in self.train_model_types_list.curselection()]
+
+    def refresh_prediction_artifacts(self) -> None:
+        self._refresh_available_artifact_dirs()
+        self.output_queue.append(("log", f"Discovered {len(self.available_artifact_dirs)} trained model artifact folders."))
+
+    def refresh_available_runs(self) -> None:
+        self._refresh_available_artifact_dirs()
+        self.output_queue.append(("log", f"Discovered {len(self.available_artifact_dirs)} existing trained runs."))
 
     def run_fetch(self) -> None:
         def callback() -> None:
@@ -686,15 +799,18 @@ class PredictorGUI:
                 )
                 created_dirs.append(str(artifact_dir))
                 self.output_queue.append(("log", f"{model_type}: validation log loss={result.metrics['global_validation']['log_loss']:.6f}"))
-            self.metrics_dirs_var.set(";".join(created_dirs))
-            self.predict_artifact_dirs_var.set(";".join(created_dirs))
+            self._refresh_available_artifact_dirs()
+            self._set_listbox_values(self.metrics_artifact_list, self.available_artifact_dirs, selected=created_dirs)
+            self._set_listbox_values(self.predict_artifact_list, self.available_artifact_dirs, selected=created_dirs)
             self.load_metrics_comparison(from_background=True)
 
         self._run_background("Train models", callback)
 
     def load_metrics_comparison(self, *, from_background: bool = False) -> None:
         def callback() -> None:
-            dirs = [item.strip() for item in self.metrics_dirs_var.get().split(";") if item.strip()]
+            dirs = self._selected_metrics_artifact_dirs()
+            if not dirs:
+                raise ValueError("Select at least one existing run in the Train tab.")
             frame = training_comparison_frame(dirs)
             self._populate_tree(self.metrics_tree, frame)
             self.output_queue.append(("log", f"Loaded training comparison for {len(frame)} runs."))
@@ -704,9 +820,25 @@ class PredictorGUI:
         else:
             self._run_background("Load metrics comparison", callback)
 
+    def load_close_distance_graph(self) -> None:
+        def callback() -> None:
+            dirs = self._selected_metrics_artifact_dirs()
+            if not dirs:
+                raise ValueError("Select at least one existing run in the Train tab.")
+            dataset_path = self.train_dataset_var.get().strip()
+            if not dataset_path:
+                raise ValueError("Choose a dataset CSV in the Train tab before loading the close-distance graph.")
+            frame = close_distance_efficacy_frame(dirs, dataset_path)
+            self._draw_efficacy_chart(frame, metric=self.efficacy_metric_var.get())
+            self.output_queue.append(("log", f"Loaded close-distance graph for {len(dirs)} runs.")) 
+
+        self._run_background("Load close-distance graph", callback)
+
     def run_prediction_comparison(self) -> None:
         def callback() -> None:
-            artifact_dirs = [item.strip() for item in self.predict_artifact_dirs_var.get().split(";") if item.strip()]
+            artifact_dirs = self._selected_prediction_artifact_dirs()
+            if not artifact_dirs:
+                raise ValueError("Select at least one trained model run in the Predict tab.")
             history_paths = [item.strip() for item in self.predict_history_var.get().split(";") if item.strip()]
             category = self.predict_category_var.get().strip() or None
             frames: dict[str, pd.DataFrame] = {}
@@ -733,7 +865,7 @@ class PredictorGUI:
         def callback() -> None:
             if not self.last_prediction_frames:
                 raise RuntimeError("Run a prediction comparison first so there is something to snapshot.")
-            artifact_dirs = [item.strip() for item in self.predict_artifact_dirs_var.get().split(";") if item.strip()]
+            artifact_dirs = self._selected_prediction_artifact_dirs()
             artifact_lookup = {(Path(path).name or path): path for path in artifact_dirs}
             result = save_prediction_snapshots(
                 self.last_prediction_frames,
@@ -748,12 +880,14 @@ class PredictorGUI:
 
     def run_snapshot_review(self) -> None:
         def callback() -> None:
+            limit_text = self.review_limit_var.get().strip()
             frame = compare_prediction_snapshots(
                 self.review_snapshot_input_var.get(),
-                limit=int(self.review_limit_var.get()),
+                limit=int(limit_text) if limit_text else None,
                 status_filter=self.review_status_var.get(),
             )
             self._populate_tree(self.snapshot_review_tree, frame)
+            self._populate_tree(self.snapshot_summary_tree, snapshot_review_summary_frame(frame))
             self.output_queue.append(("log", f"Loaded snapshot review with {len(frame)} rows."))
 
         self._run_background("Snapshot review", callback)
@@ -773,6 +907,8 @@ class PredictorGUI:
             TreeHeadingToolTip(tree, descriptions)
         elif tree is self.snapshot_review_tree:
             TreeHeadingToolTip(tree, dict(SNAPSHOT_REVIEW_COLUMN_TOOLTIPS))
+        elif tree is self.snapshot_summary_tree:
+            TreeHeadingToolTip(tree, dict(SNAPSHOT_SUMMARY_COLUMN_TOOLTIPS))
 
     @staticmethod
     def _format_cell(value) -> str:
@@ -829,6 +965,80 @@ class PredictorGUI:
             return (0, float(text))
         except ValueError:
             return (1, text.lower())
+
+    def _draw_efficacy_chart(self, frame: pd.DataFrame, *, metric: str) -> None:
+        canvas = self.efficacy_canvas
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 900)
+        height = max(canvas.winfo_height(), 420)
+        if frame.empty:
+            canvas.create_text(width / 2, height / 2, text="No close-distance data available for the selected runs and dataset.", font=("Segoe UI", 12))
+            return
+
+        margin_left = 80
+        margin_right = 180
+        margin_top = 40
+        margin_bottom = 70
+        plot_width = width - margin_left - margin_right
+        plot_height = height - margin_top - margin_bottom
+
+        metric_values = frame[metric].astype(float)
+        x_values = frame["lead_hours_midpoint"].astype(float)
+        y_min = float(metric_values.min())
+        y_max = float(metric_values.max())
+        if abs(y_max - y_min) < 1e-9:
+            y_min -= 0.01
+            y_max += 0.01
+
+        x_min = float(x_values.min())
+        x_max = float(x_values.max())
+        if abs(x_max - x_min) < 1e-9:
+            x_min = max(0.0, x_min - 1.0)
+            x_max += 1.0
+
+        def x_to_canvas(value: float) -> float:
+            return margin_left + ((value - x_min) / max(x_max - x_min, 1e-9)) * plot_width
+
+        def y_to_canvas(value: float) -> float:
+            return margin_top + plot_height - ((value - y_min) / max(y_max - y_min, 1e-9)) * plot_height
+
+        canvas.create_text(width / 2, 18, text=f"Model efficacy vs hours before close ({metric})", font=("Segoe UI", 12, "bold"))
+        canvas.create_line(margin_left, margin_top, margin_left, margin_top + plot_height, fill="#444")
+        canvas.create_line(margin_left, margin_top + plot_height, margin_left + plot_width, margin_top + plot_height, fill="#444")
+
+        for tick in range(5):
+            ratio = tick / 4
+            y_value = y_min + (y_max - y_min) * ratio
+            y_pos = y_to_canvas(y_value)
+            canvas.create_line(margin_left - 6, y_pos, margin_left, y_pos, fill="#666")
+            canvas.create_text(margin_left - 10, y_pos, text=f"{y_value:.3f}", anchor="e", font=("Segoe UI", 9))
+
+        unique_x = sorted(frame[["distance_label", "lead_hours_midpoint"]].drop_duplicates().to_dict("records"), key=lambda item: item["lead_hours_midpoint"])
+        for point in unique_x:
+            x_pos = x_to_canvas(float(point["lead_hours_midpoint"]))
+            canvas.create_line(x_pos, margin_top + plot_height, x_pos, margin_top + plot_height + 6, fill="#666")
+            canvas.create_text(x_pos, margin_top + plot_height + 22, text=point["distance_label"], anchor="n", font=("Segoe UI", 9))
+
+        colors = ["#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd", "#17becf"]
+        for index, (run_label, group) in enumerate(frame.groupby("run_label")):
+            color = colors[index % len(colors)]
+            ordered = group.sort_values(by="lead_hours_midpoint")
+            points: list[float] = []
+            for row in ordered.itertuples(index=False):
+                x_pos = x_to_canvas(float(row.lead_hours_midpoint))
+                y_pos = y_to_canvas(float(getattr(row, metric)))
+                points.extend([x_pos, y_pos])
+                canvas.create_oval(x_pos - 3, y_pos - 3, x_pos + 3, y_pos + 3, fill=color, outline=color)
+            if len(points) >= 4:
+                canvas.create_line(*points, fill=color, width=2, smooth=True)
+
+            legend_x = margin_left + plot_width + 20
+            legend_y = margin_top + 20 + (index * 22)
+            canvas.create_line(legend_x, legend_y, legend_x + 18, legend_y, fill=color, width=3)
+            canvas.create_text(legend_x + 24, legend_y, text=run_label, anchor="w", font=("Segoe UI", 9))
+
+        canvas.create_text(margin_left + plot_width / 2, height - 20, text="Hours before close", font=("Segoe UI", 10))
+        canvas.create_text(20, margin_top + plot_height / 2, text=metric, angle=90, font=("Segoe UI", 10))
 
 
 def launch() -> None:
