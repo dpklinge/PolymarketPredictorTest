@@ -25,6 +25,30 @@ class BackfillResult:
     records_written: int
 
 
+def extract_history_market_id(market: dict[str, Any]) -> str:
+    for field in ["clobTokenIds", "tokenIds"]:
+        values = parse_jsonish_list(market.get(field))
+        if values:
+            return str(values[0])
+
+    tokens = market.get("tokens")
+    if isinstance(tokens, list) and tokens:
+        first = tokens[0]
+        if isinstance(first, dict):
+            for key in ["tokenId", "id", "asset_id"]:
+                value = first.get(key)
+                if value:
+                    return str(value)
+        elif first:
+            return str(first)
+
+    for key in ["yesTokenId", "clobTokenId", "tokenId", "conditionId"]:
+        value = market.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
 def backfill_closed_markets(
     *,
     output_path: str | Path,
@@ -81,25 +105,26 @@ def backfill_price_history(
             market = payload["market"]
             if infer_resolution_label(market) is None:
                 continue
-            condition_id = str(market.get("conditionId") or "")
-            if not condition_id:
+            history_market_id = extract_history_market_id(market)
+            if not history_market_id:
                 continue
-            key = (condition_id, interval, str(fidelity))
+            key = (history_market_id, interval, str(fidelity))
             if key in existing_keys:
                 continue
             start_ts, end_ts = _history_window_for_market(market)
             history = client.get_prices_history(
-                market=condition_id,
+                market=history_market_id,
                 start_ts=start_ts,
                 end_ts=end_ts,
-                interval=interval,
+                interval=None,
                 fidelity=fidelity,
             )
             handle.write(
                 json.dumps(
                     {
                         "market_id": str(market.get("id") or ""),
-                        "condition_id": condition_id,
+                        "history_market_id": history_market_id,
+                        "condition_id": str(market.get("conditionId") or ""),
                         "interval": interval,
                         "fidelity": fidelity,
                         "market": market,
@@ -199,7 +224,7 @@ def _existing_price_history_keys(path: Path) -> set[tuple[str, str, str]]:
     for payload in _load_jsonl(path):
         keys.add(
             (
-                str(payload.get("condition_id") or ""),
+                str(payload.get("history_market_id") or payload.get("condition_id") or ""),
                 str(payload.get("interval") or ""),
                 str(payload.get("fidelity") or ""),
             )

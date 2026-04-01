@@ -130,6 +130,7 @@ class PredictorGUI:
 
         self.output_queue: list[tuple[str, str]] = []
         self.last_prediction_frames: dict[str, pd.DataFrame] = {}
+        self.tree_sort_state: dict[tuple[str, str], bool] = {}
 
         self._build_styles()
         self._build_layout()
@@ -289,22 +290,43 @@ class PredictorGUI:
         return listbox
 
     def _browse_file(self, variable: tk.StringVar, *, save: bool = False, multiple: bool = False) -> None:
+        initial_dir = self._initial_dir_for_value(variable.get(), fallback=Path.cwd() / "artifacts")
         if multiple:
-            paths = filedialog.askopenfilenames(initialdir=str(Path.cwd()))
+            paths = filedialog.askopenfilenames(initialdir=str(initial_dir))
             if paths:
                 variable.set(";".join(paths))
             return
         if save:
-            path = filedialog.asksaveasfilename(initialdir=str(Path.cwd()))
+            path = filedialog.asksaveasfilename(initialdir=str(initial_dir))
         else:
-            path = filedialog.askopenfilename(initialdir=str(Path.cwd()))
+            path = filedialog.askopenfilename(initialdir=str(initial_dir))
         if path:
             variable.set(path)
 
-    def _browse_directory(self, variable: tk.StringVar) -> None:
-        path = filedialog.askdirectory(initialdir=str(Path.cwd()))
+    def _browse_directory(self, variable: tk.StringVar, *, fallback: str | Path | None = None) -> None:
+        initial_dir = self._initial_dir_for_value(variable.get(), fallback=fallback or (Path.cwd() / "artifacts"))
+        path = filedialog.askdirectory(initialdir=str(initial_dir))
         if path:
             variable.set(path)
+
+    @staticmethod
+    def _initial_dir_for_value(value: str, *, fallback: str | Path) -> Path:
+        fallback_path = Path(fallback)
+        if fallback_path.suffix:
+            fallback_path = fallback_path.parent
+        fallback_path = fallback_path if fallback_path.exists() else Path.cwd()
+
+        parts = [item.strip() for item in value.split(";") if item.strip()]
+        if not parts:
+            return fallback_path
+
+        candidate = Path(parts[0])
+        if candidate.exists():
+            return candidate if candidate.is_dir() else candidate.parent
+        if candidate.suffix:
+            parent = candidate.parent
+            return parent if parent.exists() else fallback_path
+        return candidate if candidate.exists() else fallback_path
 
     def _build_fetch_tab(self) -> None:
         frame = ttk.LabelFrame(self.fetch_tab, text="Fetch Snapshot", style="Section.TLabelframe")
@@ -423,7 +445,11 @@ class PredictorGUI:
             default="artifacts/gui_runs",
             help_text="Folder where each trained model run will be stored. The GUI creates one subfolder per selected model type.",
         )
-        browse_dir = ttk.Button(frame, text="Browse", command=lambda: self._browse_directory(self.train_artifact_base_var))
+        browse_dir = ttk.Button(
+            frame,
+            text="Browse",
+            command=lambda: self._browse_directory(self.train_artifact_base_var, fallback=Path.cwd() / "artifacts" / "gui_runs"),
+        )
         browse_dir.grid(row=1, column=2, padx=(8, 0))
         ToolTip(browse_dir, "Choose the parent folder for trained model artifacts and metrics.")
 
@@ -534,7 +560,14 @@ class PredictorGUI:
             default="artifacts/prediction_snapshots",
             help_text="Base folder where prediction snapshots should be stored. The app will create a date folder and timestamped CSV file automatically.",
         )
-        browse_snapshot = ttk.Button(frame, text="Browse", command=lambda: self._browse_directory(self.snapshot_output_var))
+        browse_snapshot = ttk.Button(
+            frame,
+            text="Browse",
+            command=lambda: self._browse_directory(
+                self.snapshot_output_var,
+                fallback=Path.cwd() / "artifacts" / "prediction_snapshots",
+            ),
+        )
         browse_snapshot.grid(row=7, column=2, padx=(8, 0))
         ToolTip(browse_snapshot, "Choose the base folder for saved prediction snapshots.")
         save_snapshot = ttk.Button(frame, text="Save Current Predictions Snapshot", command=self.save_current_prediction_snapshot)
@@ -730,7 +763,7 @@ class PredictorGUI:
         tree.delete(*tree.get_children())
         tree["columns"] = columns
         for column in columns:
-            tree.heading(column, text=column)
+            tree.heading(column, text=column, command=lambda c=column, t=tree: self._sort_tree_by_column(t, c))
             tree.column(column, width=150, anchor="w")
         for _, row in frame.iterrows():
             values = [self._format_cell(value) for value in row.tolist()]
@@ -769,6 +802,33 @@ class PredictorGUI:
                     f"Which scoring path the `{model_name}` run used for this row, such as a global model or a blended category-specific model."
                 )
         return descriptions
+
+    def _sort_tree_by_column(self, tree: ttk.Treeview, column: str) -> None:
+        sort_key = (str(tree), column)
+        descending = self.tree_sort_state.get(sort_key, False)
+
+        items: list[tuple[tuple[int, object], str]] = []
+        columns = list(tree["columns"])
+        column_index = columns.index(column)
+        for item_id in tree.get_children(""):
+            raw_value = tree.item(item_id, "values")[column_index]
+            items.append((self._sortable_tree_value(raw_value), item_id))
+
+        items.sort(key=lambda pair: pair[0], reverse=descending)
+        for position, (_, item_id) in enumerate(items):
+            tree.move(item_id, "", position)
+
+        self.tree_sort_state[sort_key] = not descending
+
+    @staticmethod
+    def _sortable_tree_value(value: object) -> tuple[int, object]:
+        text = str(value).strip()
+        if text == "":
+            return (2, "")
+        try:
+            return (0, float(text))
+        except ValueError:
+            return (1, text.lower())
 
 
 def launch() -> None:

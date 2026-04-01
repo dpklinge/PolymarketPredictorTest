@@ -76,6 +76,20 @@ python -m polymarket_predictor.cli build-horizon-dataset --price-history artifac
 
 This backfill flow creates synthetic training rows representing what the market looked like 24 hours, 7 days, or 30 days before resolution.
 
+If a large `backfill-markets` run times out, use the chunked six-month script instead:
+
+```bash
+python scripts/backfill_last_6_months.py --artifact-dir artifacts/six_month_backfill
+```
+
+That script:
+
+- walks closed markets page by page instead of doing one huge pull
+- stops automatically once it reaches markets older than roughly six months
+- retries timed-out page and price-history requests with backoff
+- resumes safely from existing JSONL outputs
+- builds the horizon dataset and trains the selected model families
+
 ## Train
 
 ```bash
@@ -104,6 +118,7 @@ python -m polymarket_predictor.cli predict --artifact-dir artifacts --output pre
 ## Notes
 
 - The code targets the public Gamma API documented at [Polymarket docs](https://docs.polymarket.com/api-reference/introduction) and [List markets](https://docs.polymarket.com/api-reference/markets/list-markets).
+- Historical price backfill uses the CLOB `prices-history` endpoint with CLOB token IDs. The official timeseries docs note that `interval` should not be combined with `startTs`/`endTs`, so the backfill flow uses bounded requests without `interval` and only falls back to interval-only requests when needed.
 - Training uses only resolved binary markets where the outcome can be inferred from final `outcomePrices`.
 - Validation is chronological rather than random, so the reported metrics are out-of-sample on newer markets.
 - If a category lacks enough training examples, prediction falls back to the global model.

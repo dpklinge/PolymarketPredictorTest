@@ -148,10 +148,12 @@ class ClobClient:
         market: str,
         start_ts: int | None = None,
         end_ts: int | None = None,
-        interval: str = "1d",
+        interval: str | None = "1d",
         fidelity: int | None = 60,
     ) -> dict[str, Any]:
-        params: dict[str, Any] = {"market": market, "interval": interval}
+        params: dict[str, Any] = {"market": market}
+        if interval:
+            params["interval"] = interval
         if start_ts is not None:
             params["startTs"] = start_ts
         if end_ts is not None:

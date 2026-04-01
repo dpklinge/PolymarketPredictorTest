@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from polymarket_predictor.datasets.backfill import build_horizon_dataset
+from polymarket_predictor.datasets.backfill import build_horizon_dataset, extract_history_market_id
 from polymarket_predictor.datasets.data import (
     build_market_history_index,
     load_snapshot_file,
@@ -307,6 +307,16 @@ def test_build_horizon_dataset_creates_anchor_rows(tmp_path: Path) -> None:
     assert result.records_written == 2
     assert sorted(frame["horizon_hours"].tolist()) == [24, 48]
     assert all(frame["label"] == 1)
+
+
+def test_extract_history_market_id_prefers_clob_token_ids() -> None:
+    market = {"conditionId": "condition-1", "clobTokenIds": json.dumps(["yes-token", "no-token"])}
+    assert extract_history_market_id(market) == "yes-token"
+
+
+def test_extract_history_market_id_falls_back_to_condition_id() -> None:
+    market = {"conditionId": "condition-1"}
+    assert extract_history_market_id(market) == "condition-1"
 
 
 def test_prepare_dataset_removes_duplicate_snapshot_rows(tmp_path: Path) -> None:
